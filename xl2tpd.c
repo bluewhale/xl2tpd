@@ -30,6 +30,9 @@
 #include <errno.h>
 #include <unistd.h>
 #include <time.h>
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <sys/un.h>
 #if (__GLIBC__ < 2)
 # if defined(FREEBSD) || defined(OPENBSD)
 #  include <sys/signal.h>
@@ -61,8 +64,6 @@ char *args;
 char *dial_no_tmp;              /* jz: Dialnumber for Outgoing Call */
 int switch_io = 0;              /* jz: Switch for Incoming or Outgoing Call */
 
-static void open_controlfd(void);
-
 volatile sig_atomic_t sigterm_received;
 volatile sig_atomic_t sigint_received;
 volatile sig_atomic_t sigchld_received;
@@ -71,35 +72,35 @@ volatile sig_atomic_t sighup_received;
 
 struct control_requests_handler {
     char type;
-    int (*handler) (FILE* resf, char* bufp);
+    int (*handler) (int socket, char* bufp);
 };
 
-int control_handle_available(FILE* resf, char* bufp);
-int control_handle_lns_add_modify(FILE* resf, char* bufp);
-int control_handle_lns_status(FILE* resf, char* bufp);
-int control_handle_tunnel(FILE* respf, char* bufp);
-int control_handle_lac_connect(FILE* resf, char* bufp);
-int control_handle_lac_outgoing_call(FILE* resf, char* bufp);
-int control_handle_lac_hangup(FILE* resf, char* bufp);
-int control_handle_lac_disconnect(FILE* resf, char* bufp);
-int control_handle_lac_add_modify(FILE* resf, char* bufp);
-int control_handle_lac_remove(FILE* resf, char* bufp);
-int control_handle_lac_status(FILE* resf, char* bufp);
-int control_handle_lns_remove(FILE* resf, char* bufp);
+int control_handle_available(int, char* bufp);
+int control_handle_lns_add_modify(int, char* bufp);
+int control_handle_lns_status(int, char* bufp);
+//int control_handle_tunnel(FILE* respf, char* bufp);
+//int control_handle_lac_connect(FILE* resf, char* bufp);
+//int control_handle_lac_outgoing_call(FILE* resf, char* bufp);
+//int control_handle_lac_hangup(FILE* resf, char* bufp);
+//int control_handle_lac_disconnect(FILE* resf, char* bufp);
+//int control_handle_lac_add_modify(FILE* resf, char* bufp);
+//int control_handle_lac_remove(FILE* resf, char* bufp);
+//int control_handle_lac_status(FILE* resf, char* bufp);
+//int control_handle_lns_remove(FILE* resf, char* bufp);
 
 struct control_requests_handler control_handlers[] = {
     {CONTROL_PIPE_REQ_AVAILABLE, &control_handle_available},
     {CONTROL_PIPE_REQ_LNS_ADD_MODIFY, &control_handle_lns_add_modify},
     {CONTROL_PIPE_REQ_LNS_STATUS, &control_handle_lns_status},
-    {CONTROL_PIPE_REQ_TUNNEL, &control_handle_tunnel},
-    {CONTROL_PIPE_REQ_LAC_CONNECT, &control_handle_lac_connect},
-    {CONTROL_PIPE_REQ_LAC_OUTGOING_CALL, &control_handle_lac_outgoing_call},
-    {CONTROL_PIPE_REQ_LAC_HANGUP, &control_handle_lac_hangup},
-    {CONTROL_PIPE_REQ_LAC_DISCONNECT, &control_handle_lac_disconnect},
-    {CONTROL_PIPE_REQ_LAC_ADD_MODIFY, &control_handle_lac_add_modify},
-    {CONTROL_PIPE_REQ_LAC_REMOVE, &control_handle_lac_remove},
-    {CONTROL_PIPE_REQ_LAC_STATUS, &control_handle_lac_status},
-    {CONTROL_PIPE_REQ_LNS_REMOVE, &control_handle_lns_remove},
+    //{CONTROL_PIPE_REQ_TUNNEL, &control_handle_tunnel},
+    //{CONTROL_PIPE_REQ_LAC_CONNECT, &control_handle_lac_connect},
+    //{CONTROL_PIPE_REQ_LAC_OUTGOING_CALL, &control_handle_lac_outgoing_call},
+    //{CONTROL_PIPE_REQ_LAC_HANGUP, &control_handle_lac_hangup},
+    //{CONTROL_PIPE_REQ_LAC_DISCONNECT, &control_handle_lac_disconnect},
+    //{CONTROL_PIPE_REQ_LAC_ADD_MODIFY, &control_handle_lac_add_modify},
+    //{CONTROL_PIPE_REQ_LAC_REMOVE, &control_handle_lac_remove},
+    //{CONTROL_PIPE_REQ_LAC_STATUS, &control_handle_lac_status},
+    //{CONTROL_PIPE_REQ_LNS_REMOVE, &control_handle_lns_remove},
 
     {0, NULL}
 };
@@ -924,6 +925,20 @@ struct tunnel *new_tunnel ()
     return tmp;
 }
 
+void write_res_2 (int socket, const char *fmt, ...)
+{
+    va_list args;
+    char buf[1024];
+
+    va_start (args, fmt);
+    vsprintf (buf, fmt, args);
+    va_end (args);
+
+    if (send(socket, buf, strlen(buf), 0) < 0) {
+        printf("sending data\n");
+    }
+}
+
 void write_res (FILE* res_file, const char *fmt, ...)
 {
     if (!res_file || ferror (res_file) || feof (res_file))
@@ -1019,47 +1034,47 @@ struct lns* find_lns_by_name(char* name){
     return NULL; /* ml: Ok we could not find anything*/
 }
 
-int control_handle_available(FILE* resf, char* bufp){
+int control_handle_available(int socket, char* bufp){
     struct lac *lac;
     struct lns *lns;
 
-    write_res (resf, "%02i OK\n", 0);
+    write_res_2 (socket, "%02i OK\n", 0);
     lns = lnslist;
     int lns_count = 0;
     while (lns)
     {
-        write_res (resf, "%02i AVAILABLE lns.%d.name=%s\n", 0, lns_count, lns->entname);
+        write_res_2 (socket, "%02i AVAILABLE lns.%d.name=%s\n", 0, lns_count, lns->entname);
         lns_count++;
         lns= lns->next;
     };
 
     /* Can the default really be NULL?*/
     if(deflns){
-        write_res (resf, "%02i AVAILABLE lns.%d.name=%s\n", 0, lns_count, deflns->entname);
+        write_res_2 (socket, "%02i AVAILABLE lns.%d.name=%s\n", 0, lns_count, deflns->entname);
         lns_count++;
     }                                               
 
-    write_res (resf, "%02i AVAILABLE lns.cout=%d\n", 0, lns_count);
+    write_res_2 (socket, "%02i AVAILABLE lns.cout=%d\n", 0, lns_count);
 
     lac  = laclist;
     int lac_count = 0;
     while (lac)
     {
-        write_res (resf, "%02i AVAILABLE lac.%d.name=%s\n", 0, lac_count, lac->entname);
+        write_res_2 (socket, "%02i AVAILABLE lac.%d.name=%s\n", 0, lac_count, lac->entname);
         lac_count++;
         lac= lac->next;
     };
 
     if(deflac){
-        write_res (resf, "%02i AVAILABLE lac.%d.name=%s\n", 0, lac_count, deflac->entname);
+        write_res_2 (socket, "%02i AVAILABLE lac.%d.name=%s\n", 0, lac_count, deflac->entname);
         lac_count++;
     }                                               
 
-    write_res (resf, "%02i AVAILABLE lac.count=%d\n", 0, lac_count);
+    write_res_2 (socket, "%02i AVAILABLE lac.count=%d\n", 0, lac_count);
     return 1;
 }
 
-int control_handle_lns_add_modify(FILE* resf, char* bufp){
+int control_handle_lns_add_modify(int socket, char* bufp){
     struct lns *lns;
     char* tunstr;
     char delims[] = " ";
@@ -1081,12 +1096,12 @@ int control_handle_lns_add_modify(FILE* resf, char* bufp){
         bufp = tunstr + strlen (tunstr) + 1;
         if (parse_one_line_lns (bufp, lns))
         {
-            write_res (resf, "%02i Configuration parse error\n", 3);
+            write_res_2 (socket, "%02i Configuration parse error\n", 3);
         }else{
-            write_res (resf, "%02i OK: Saved value\n", 0);
+            write_res_2 (socket, "%02i OK: Saved value\n", 0);
         }
     }else{
-        write_res (resf, "%02i Error: Could not find lns and could not create it\n", 1);
+        write_res_2 (socket, "%02i Error: Could not find lns and could not create it\n", 1);
     }
 
     return 1;
@@ -1140,7 +1155,7 @@ int control_handle_lns_remove(FILE* resf, char* bufp){
     return 1;
 }
 
-int control_handle_lns_status(FILE* resf, char* bufp){
+int control_handle_lns_status(int socket, char* bufp){
     struct lns *lns;
     char* tunstr;
     char delims[] = " ";
@@ -1149,40 +1164,40 @@ int control_handle_lns_status(FILE* resf, char* bufp){
     lns = find_lns_by_name(tunstr);
     if(lns){
         /* Lets keep it simple, what is useful first */
-        write_res (resf, "%02i OK\n", 0);
+        write_res_2(socket, "%02i OK\n", 0);
 
         int active_tunnel_count = 0;
         struct tunnel* t = tunnels.head;
         while(t){
             if(t->lns == lns){
                 /* Lets provide some information on each tunnel */
-                write_res (resf, "%02i STATUS tunnels.%d.id=%d\n", 0, active_tunnel_count, t->tid);
-                write_res (resf, "%02i STATUS tunnels.%d.peer=%s:%d\n", 0, active_tunnel_count,
+                write_res_2 (socket, "%02i STATUS tunnels.%d.id=%d\n", 0, active_tunnel_count, t->tid);
+                write_res_2 (socket, "%02i STATUS tunnels.%d.peer=%s:%d\n", 0, active_tunnel_count,
                         IPADDY (t->peer.sin_addr), ntohs (t->peer.sin_port));
 
                 /* And some call stats */
                 struct call *c = t->call_head;
                 int active_call_count = 0;
                 while(c){
-                    write_res (resf, "%02i STATUS tunnels.%d.calls.%d.id=%d\n", 0,
+                    write_res_2(socket, "%02i STATUS tunnels.%d.calls.%d.id=%d\n", 0,
                             active_tunnel_count, active_call_count, c->ourcid);
 
-                    write_res (resf, "%02i STATUS tunnels.%d.calls.%d.tx_bytes=%d\n", 0,
+                    write_res_2(socket, "%02i STATUS tunnels.%d.calls.%d.tx_bytes=%d\n", 0,
                             active_tunnel_count, active_call_count, c->tx_bytes);
-                    write_res (resf, "%02i STATUS tunnels.%d.calls.%d.rx_bytes=%d\n", 0,
+                    write_res_2(socket, "%02i STATUS tunnels.%d.calls.%d.rx_bytes=%d\n", 0,
                             active_tunnel_count, active_call_count, c->rx_bytes);
 
-                    write_res (resf, "%02i STATUS tunnels.%d.calls.%d.tx_pkts=%d\n", 0,
+                    write_res_2(socket, "%02i STATUS tunnels.%d.calls.%d.tx_pkts=%d\n", 0,
                             active_tunnel_count, active_call_count, c->tx_pkts);
 
-                    write_res (resf, "%02i STATUS tunnels.%d.calls.%d.rx_pkts=%d\n", 0,
+                    write_res_2(socket, "%02i STATUS tunnels.%d.calls.%d.rx_pkts=%d\n", 0,
                             active_tunnel_count, active_call_count, c->rx_pkts);
 
                     c = c->next;
                     active_call_count++;
                 }
 
-                write_res (resf, "%02i STATUS tunnels.%d.calls.count=%d\n", 0,
+                write_res_2 (socket, "%02i STATUS tunnels.%d.calls.count=%d\n", 0,
                         active_tunnel_count, active_call_count);
 
                 active_tunnel_count++;
@@ -1190,9 +1205,9 @@ int control_handle_lns_status(FILE* resf, char* bufp){
             t = t->next;
         }
 
-        write_res (resf, "%02i STATUS tunnels.count=%d\n", 0, active_tunnel_count);
+        write_res_2 (socket, "%02i STATUS tunnels.count=%d\n", 0, active_tunnel_count);
     }else{
-        write_res (resf, "%02i Error: Could not find lns\n", 1);
+        write_res_2 (socket, "%02i Error: Could not find lns\n", 1);
     }
 
     return 1;
@@ -1499,95 +1514,58 @@ int control_handle_lac_status(FILE* resf, char* bufp){
 
 void do_control ()
 {
-    char buf[CONTROL_PIPE_MESSAGE_SIZE];
-    char *bufp; /* current buffer pointer */
+    int base_socket, accepted_socket;
+    struct sockaddr_un local, remote;
+    size_t rsize = sizeof(remote);
+    int input_data_size;
+    char buf[CONTROL_PIPE_MESSAGE_SIZE];    
+    struct control_requests_handler* handler;
 
-    int cnt = -1;
-    int done = 0;
-    int handler_found = 0;
-    struct control_requests_handler* handler = NULL; 
-
-    bzero(buf, sizeof(buf));
-    buf[0]='\0';
-
-    char* res_filename; /* name of file to write result of command */
-    FILE* resf; /* stream for write result of command */
-
-    while (!done)
-    {
-        cnt = read (control_fd, buf, sizeof (buf));
-        if (cnt <= 0)
-        {
-            if(cnt < 0 && errno != EINTR) {
-                perror("controlfd");
-            }
-            done = 1;
-            break;
-        }
-
-        if (buf[cnt - 1] == '\n')
-            buf[--cnt] = 0;
-#ifdef DEBUG_CONTROL
-        l2tp_log (LOG_DEBUG, "%s: Got message %s (%d bytes long)\n",
-                __FUNCTION__, buf, cnt);
-#endif
-        bufp = buf;
-        /* check if caller want to get result */
-        if (bufp[0] == '@')
-        {
-            /* parse filename (@/path/to/file *...), where * is command */
-            res_filename = &bufp[1];
-            int fnlength = strcspn(res_filename, " ");
-            if ((fnlength == 0) || (res_filename[fnlength] == '\0')){
-                l2tp_log (LOG_DEBUG,
-                        "%s: Can't parse result filename or command\n",
-                        __FUNCTION__
-                        );
-                continue;
-            }
-            res_filename[fnlength] = '\0';
-            bufp = &res_filename[fnlength + 1]; /* skip filename in bufp */
-
-            /*FIXME: check quotes to allow filenames with spaces?
-              (do not forget quotes escaping to allow filenames with quotes)*/
-
-            /*FIXME: write to res_filename may cause SIGPIPE, need to catch it*/
-            resf = fopen (res_filename, "w");
-            if (!resf) {
-                l2tp_log (LOG_DEBUG, "%s: Can't open result file %s\n",
-                        __FUNCTION__, res_filename);
-                continue;
-            }
-        }else{
-            resf = NULL;
-        }
-
-        /* Search for a handler based on request type */
-        for(handler = control_handlers; handler->handler; handler++){
-
-            /* If handler is found, then handle the request and set handler_found = 1 */
-            if(handler->type == bufp[0]){
-                handler->handler(resf, bufp);
-                handler_found = 1;
-                break;
-            }
-        }
-
-        /* Does nto appear as though we found a handler, so respond with an error*/
-        if(!handler_found){
-            l2tp_log (LOG_DEBUG, "Unknown command %c\n", bufp[0]);
-            write_res (resf, "%02i Unknown command %c\n", 1, bufp[0]);
-        }
-
-        if (resf)
-        {
-            fclose (resf);
-        }
+    if((base_socket = socket(AF_UNIX, SOCK_STREAM, 0)) < 0){
+        l2tp_log(LOG_CRIT, "failed to open control socket: %s\n", strerror(errno));
+        exit(-1);
+    }
+    
+    local.sun_family = AF_UNIX;
+    strcpy(local.sun_path, "socket1");
+    unlink(local.sun_path);
+    if (bind(base_socket, (struct sockaddr *)&local, strlen(local.sun_path) + sizeof(local.sun_family)) < 0){
+        l2tp_log(LOG_CRIT, "failed to bind control socket: %s\n", strerror(errno));
+        exit(-1);
     }
 
-    /* Otherwise select goes nuts. Yeah, this just seems wrong */
-    close (control_fd);
-    open_controlfd();
+    if (listen(base_socket, 5) == -1){
+        l2tp_log(LOG_CRIT, "failed to listen control socket: %s\n", strerror(errno));
+        exit(-1);
+    }
+
+    for(;;){
+        l2tp_log(LOG_DEBUG, "listening for control connections\n");
+        if ((accepted_socket = accept(base_socket, (struct sockaddr *)&remote, &rsize)) > 0){
+            l2tp_log(LOG_DEBUG, "accepted a control connection, waiting for message\n");
+
+            input_data_size = recv(accepted_socket, buf, CONTROL_PIPE_MESSAGE_SIZE, 0);
+            if(input_data_size > 0){
+                for(handler = control_handlers; handler->handler; handler++){
+                    /* If handler is found, then handle the request and set handler_found = 1 */
+                    if(handler->type == buf[0]){
+                        l2tp_log(LOG_DEBUG, "received control message, passing to handler\n");
+                        handler->handler(accepted_socket, &buf);
+                        break;
+                    }
+                }
+            }else{
+                l2tp_log(LOG_WARNING, "control message was to small, could not process\n");
+            }
+        }else{
+            l2tp_log(LOG_WARNING, "control message accept failed: %s\n", strerror(errno));
+        }
+
+        l2tp_log(LOG_DEBUG, "closing control socket client connection\n");
+        close(accepted_socket);
+    }
+
+    close(base_socket);
 }
 
 
@@ -1745,24 +1723,6 @@ static void consider_pidfile() {
     }
 }
 
-static void open_controlfd() 
-{
-    control_fd = open (gconfig.controlfile, O_RDONLY | O_NONBLOCK, 0600);
-    if (control_fd < 0)
-    {
-        l2tp_log (LOG_CRIT, "%s: Unable to open %s for reading.\n",
-                __FUNCTION__, gconfig.controlfile);
-        exit (1);
-    }
-
-    /* turn off O_NONBLOCK */
-    if(fcntl(control_fd, F_SETFL, O_RDONLY)==-1) {
-        l2tp_log(LOG_CRIT, "Can not turn off nonblocking mode for controlfd: %s\n",
-                strerror(errno));
-        exit(1);
-    }
-}
-
 void init (int argc,char *argv[])
 {
     struct lac *lac;
@@ -1802,8 +1762,6 @@ void init (int argc,char *argv[])
 
     unlink(gconfig.controlfile);
     mkfifo (gconfig.controlfile, 0600);
-
-    open_controlfd();
 
     l2tp_log (LOG_INFO, "xl2tpd version " SERVER_VERSION " started on %s PID:%d\n",
             hostname, getpid ());

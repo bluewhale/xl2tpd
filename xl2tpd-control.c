@@ -18,6 +18,8 @@
 #include <sys/types.h>
 #include <fcntl.h>
 #include <errno.h>
+#include <sys/socket.h>
+#include <sys/un.h>
 
 #include "l2tp.h"
 
@@ -43,19 +45,19 @@ int read_result(int result_fd, char* buf, ssize_t size);
 struct command_t
 {
     char *name;
-    int (*handler) (FILE*, char* tunnel, int optc, char *optv[]);
+    int (*handler) (int socket_fd, char* tunnel, int optc, char *optv[]);
     int requires_tunnel;
 };
 
-int command_add_lac (FILE*, char* tunnel, int optc, char *optv[]);
-int command_connect_lac (FILE*, char* tunnel, int optc, char *optv[]);
-int command_disconnect_lac (FILE*, char* tunnel, int optc, char *optv[]);
-int command_remove_lac (FILE*, char* tunnel, int optc, char *optv[]);
-int command_add_lns (FILE*, char* tunnel, int optc, char *optv[]);
-int command_status_lac (FILE*, char* tunnel, int optc, char *optv[]);
-int command_status_lns (FILE*, char* tunnel, int optc, char *optv[]);
-int command_remove_lns (FILE*, char* tunnel, int optc, char *optv[]);
-int command_available (FILE*, char* tunnel, int optc, char *optv[]);
+int command_add_lac (int, char* tunnel, int optc, char *optv[]);
+int command_connect_lac (int, char* tunnel, int optc, char *optv[]);
+int command_disconnect_lac (int, char* tunnel, int optc, char *optv[]);
+int command_remove_lac (int, char* tunnel, int optc, char *optv[]);
+int command_add_lns (int, char* tunnel, int optc, char *optv[]);
+int command_status_lac (int, char* tunnel, int optc, char *optv[]);
+int command_status_lns (int, char* tunnel, int optc, char *optv[]);
+int command_remove_lns (int, char* tunnel, int optc, char *optv[]);
+int command_available (int, char* tunnel, int optc, char *optv[]);
 
 struct command_t commands[] = {
     /* Keep this command mapping for backwards compat */
@@ -188,107 +190,42 @@ int main (int argc, char *argv[])
             return -1;
         }
     }
-    
-    char buf[CONTROL_PIPE_MESSAGE_SIZE] = "";
-    FILE* mesf = fmemopen (buf, CONTROL_PIPE_MESSAGE_SIZE, "w");
-
-    /* create result pipe for reading */
-    char result_filename[128];
-    snprintf (result_filename, 128, RESULT_FILENAME_FORMAT, getpid());
-    unlink (result_filename);
-    mkfifo (result_filename, 0600);
-    int result_fd = open (result_filename, O_RDONLY | O_NONBLOCK, 0600);
-    if (result_fd < 0)
-    {
-        print_error (ERROR_LEVEL,
-            "error: unable to open %s for reading.\n", result_filename);
-        return -2;
-    }
    
-    /* turn off O_NONBLOCK */
-    if (fcntl (result_fd, F_SETFL, O_RDONLY) == -1) {
-        print_error (ERROR_LEVEL,
-            "Can not turn off nonblocking mode for result_fd: %s\n",
-            strerror(errno));
-        return -2;
+    int ctl_socket;
+    struct sockaddr_un ctl_socket_addr;
+    if((ctl_socket = socket(AF_UNIX, SOCK_STREAM, 0)) < 0) {
+        //error
     }
-    
-    /* pass result filename to command */
-    fprintf (mesf, "@%s ", result_filename);
-    if (ferror (mesf))
-    {
-        print_error (ERROR_LEVEL, "internal error: message buffer to short");
-        return -2;
+
+    ctl_socket_addr.sun_family = AF_UNIX;
+    strcpy(ctl_socket_addr.sun_path, "socket1");
+    if (connect(ctl_socket, (struct sockaddr *)&ctl_socket_addr, sizeof(ctl_socket_addr.sun_family) + strlen(ctl_socket_addr.sun_path)) == -1) {
+        //error
     }
-    
-    /* format command with remaining arguments */
+
+    char buf[CONTROL_PIPE_MESSAGE_SIZE] = "";
     int command_res = command->handler (
-        mesf, tunnel_name, argc - i, argv + i
+        ctl_socket, tunnel_name, argc - i, argv + i
     );
+
     if (command_res < 0)
     {
         print_error (ERROR_LEVEL, "error: command parse error\n");
         return -1;
     }
-    
-    fflush (mesf);
-    
-    if (ferror (mesf))
-    {
-        print_error (ERROR_LEVEL,
-            "error: message too long (max = %i ch.)\n",
-            CONTROL_PIPE_MESSAGE_SIZE - 1);
-        return -1;
-    }
-    
-    print_error (DEBUG_LEVEL, "command to be passed:\n%s\n", buf);
 
-    /* try to open control file for writing */
-    int control_fd = open (control_filename, O_WRONLY, 0600);
-    if (control_fd < 0)
-    {
-        int errorno = errno;
-        switch (errorno)
-        {
-        case EACCES:
-            print_error (ERROR_LEVEL,
-                "Unable to open %s for writing."
-                " Is xl2tpd running and you have appropriate permissions?\n",
-                control_filename);
+    char response_buf[CONTROL_PIPE_MESSAGE_SIZE];
+    int response_len;
+    for(;;){
+        if((response_len = read_result(ctl_socket, &response_buf, CONTROL_PIPE_MESSAGE_SIZE)) > 0){
+            printf("%s", response_buf);
+        }else{
             break;
-        default:
-            print_error (ERROR_LEVEL,
-                "Unable to open %s for writing: %s\n",
-                control_filename, strerror (errorno));
         }
-        return -1;
     }
-    
-    /* pass command to control pipe */
-    if (write (control_fd, buf, ftell (mesf)) < 0)
-    {
-      int errorno = errno;
-      print_error (ERROR_LEVEL,
-                "Unable to write to %s: %s\n",
-                control_filename, strerror (errorno));
-      close (control_fd);
-      return -1;
-    }
-    close (control_fd);
-    
-    /* read result from pipe */
-    char rbuf[CONTROL_PIPE_MESSAGE_SIZE] = "";
-    int command_result_code = read_result (
-        result_fd, rbuf, CONTROL_PIPE_MESSAGE_SIZE
-    );
-    printf ("%s", rbuf);
-    
-    /* cleaning up */
-    
-    close (result_fd);
-    unlink (result_filename);
-    
-    return command_result_code;
+
+    close(ctl_socket); 
+    return 0;
 }
 
 void print_error (int level, const char *fmt, ...)
@@ -302,44 +239,45 @@ void print_error (int level, const char *fmt, ...)
 
 int read_result(int result_fd, char* buf, ssize_t size)
 {
-    /* read result from result_fd */
-    /*FIXME: there is a chance to hang up reading.
-             Should I create watching thread with timeout?
-     */
-    ssize_t readed;
-    do
-    {
-        readed = read (result_fd, buf, size);
-        if (readed < 0)
-        {
-            print_error (ERROR_LEVEL,
-                "error: can't read command result: %s\n", strerror (errno));
-            break;
-        }
-    } while (readed == 0);
-    buf[readed] = '\0';
-    
-    /* scan result code */
-    int command_result_code = -3;
-    sscanf (buf, "%i", &command_result_code);
-    
-    return command_result_code;
+    return recv(result_fd, buf, size, 0);
 }
 
+
+int write_request(int socket_fd, const char *fmt, ...)
+{
+    va_list args;
+    char buf[1024];
+
+    va_start (args, fmt);
+    vsprintf(buf, fmt, args);
+    va_end (args);
+
+    // Send this to the socket
+    if (send(socket_fd, buf, strlen(buf), 0) < 0) {
+        printf("send() failed\n");
+        perror("send");
+        //error
+    }
+    return 0;
+}
+
+
 int command_add
-(FILE* mesf, char* tunnel, int optc, char *optv[], int reqopt)
+(int socket_fd, char* tunnel, int optc, char *optv[], int reqopt)
 {
     if (optc <= 0)
     {
         print_error (ERROR_LEVEL, "error: tunnel configuration expected\n");
         return -1;
     }
-    fprintf (mesf, "%c %s ", reqopt, tunnel);
+
+    char buf[1024];
+    sprintf (buf, "%c %s ", reqopt, tunnel);
     int i;
     int wait_key = 1;
     for (i = 0; i < optc; i++)
     {
-        fprintf (mesf, "%s", optv[i]);
+        sprintf (buf, "%s", optv[i]);
         if (wait_key)
         {
             /* try to find '=' */
@@ -349,87 +287,83 @@ int command_add
                 /* check is it not last symbol */
                 if (eqv != (optv[i] + strlen(optv[i]) - 1))
                 {
-                    fprintf (mesf, ";"); /* end up option */
+                    sprintf (buf, ";"); /* end up option */
                 } else {
                     wait_key = 0; /* now we waiting for value */
                 }
             } else { /* two-word key */
-                fprintf (mesf, " "); /* restore space */
+                sprintf(buf, " "); /* restore space */
             }
         } else {
-            fprintf (mesf, ";"); /* end up option */        
+            sprintf(buf, ";"); /* end up option */        
             wait_key = 1; /* now we again waiting for key */
         }
     }
+
+    write_request(socket_fd, "%s", buf);
     return 0;
 }
 
 int command_add_lac
-(FILE* mesf, char* tunnel, int optc, char *optv[])
+(int socket_fd, char* tunnel, int optc, char *optv[])
 {
-    return command_add(mesf, tunnel, optc, optv, CONTROL_PIPE_REQ_LAC_ADD_MODIFY);
+    return command_add(socket_fd, tunnel, optc, optv, CONTROL_PIPE_REQ_LAC_ADD_MODIFY);
 }
 
 int command_add_lns
-(FILE* mesf, char* tunnel, int optc, char *optv[])
+(int socket_fd, char* tunnel, int optc, char *optv[])
 {
-    return command_add(mesf, tunnel, optc, optv, CONTROL_PIPE_REQ_LNS_ADD_MODIFY);
+    return command_add(socket_fd, tunnel, optc, optv, CONTROL_PIPE_REQ_LNS_ADD_MODIFY);
 }
 
 
 int command_connect_lac
-(FILE* mesf, char* tunnel, int optc, char *optv[])
+(int socket_fd, char* tunnel, int optc, char *optv[])
 {
-    fprintf (mesf, "%c %s", CONTROL_PIPE_REQ_LAC_CONNECT, tunnel);
-    /* try to read authname and password from opts */
+    /*fprintf (mesf, "%c %s", CONTROL_PIPE_REQ_LAC_CONNECT, tunnel);
     if (optc > 0) {
         if (optc == 1)
             fprintf (mesf, " %s", optv[0]);
         else // optc >= 2
             fprintf (mesf, " %s %s", optv[0], optv[1]);
     }
+    */
     return 0;
 }
 
 int command_disconnect_lac
-(FILE* mesf, char* tunnel, int optc, char *optv[])
+(int socket_fd, char* tunnel, int optc, char *optv[])
 {
-    fprintf (mesf, "%c %s", CONTROL_PIPE_REQ_LAC_DISCONNECT, tunnel);
-    return 0;
+    return write_request(socket_fd, "%c %s", CONTROL_PIPE_REQ_LAC_DISCONNECT, tunnel);
 }
 
 int command_remove_lac
-(FILE* mesf, char* tunnel, int optc, char *optv[])
+(int socket_fd, char* tunnel, int optc, char *optv[])
 {
-    fprintf (mesf, "%c %s", CONTROL_PIPE_REQ_LAC_REMOVE, tunnel);
-    return 0;
+    return write_request(socket_fd, "%c %s", CONTROL_PIPE_REQ_LAC_REMOVE, tunnel);
 }
 
 int command_status_lns
-(FILE* mesf, char* tunnel, int optc, char *optv[])
+(int socket_fd, char* tunnel, int optc, char *optv[])
 {
-    fprintf (mesf, "%c %s", CONTROL_PIPE_REQ_LNS_STATUS, tunnel);
-    return 0;
+    return write_request(socket_fd, "%c %s", CONTROL_PIPE_REQ_LNS_STATUS, tunnel);
 }
 
 int command_status_lac
-(FILE* mesf, char* tunnel, int optc, char *optv[])
+(int socket_fd, char* tunnel, int optc, char *optv[])
 {
-    fprintf (mesf, "%c %s", CONTROL_PIPE_REQ_LAC_STATUS, tunnel);
-    return 0;
+    return write_request(socket_fd, "%c %s", CONTROL_PIPE_REQ_LAC_STATUS, tunnel);
 }
 
 int command_available
-(FILE* mesf, char* tunnel, int optc, char *optv[])
+(int socket_fd, char* tunnel, int optc, char *optv[])
 {
-    fprintf (mesf, "%c %s", CONTROL_PIPE_REQ_AVAILABLE, tunnel);
-    return 0;
+    return write_request(socket_fd, "%c %s", CONTROL_PIPE_REQ_AVAILABLE, tunnel);
 }
 
 int command_remove_lns
-(FILE* mesf, char* tunnel, int optc, char *optv[])
+(int socket_fd, char* tunnel, int optc, char *optv[])
 {
-    fprintf (mesf, "%c %s", CONTROL_PIPE_REQ_LNS_REMOVE, tunnel);
-    return 0;
+    return write_request(socket_fd, "%c %s", CONTROL_PIPE_REQ_LNS_REMOVE, tunnel);
 }
 
